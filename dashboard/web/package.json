@@ -1,0 +1,22 @@
+{
+  "name": "dashboard-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "3d-force-graph": "^1.80.0",
+    "d3-force-3d": "^3.0.6",
+    "pinia": "^2.2.6",
+    "three": "^0.171.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^5.4.11"
+  }
+}

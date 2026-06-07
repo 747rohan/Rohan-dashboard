@@ -1,0 +1,150 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500&display=swap');
+
+:root {
+  /* Accent RGB components — one color, many opacities */
+  --ar: 170; --ag: 207; --ab: 209;
+  --accent:    rgb(var(--ar), var(--ag), var(--ab));
+  --accent-90: rgba(var(--ar), var(--ag), var(--ab), 0.90);
+  --accent-60: rgba(var(--ar), var(--ag), var(--ab), 0.60);
+  --accent-40: rgba(var(--ar), var(--ag), var(--ab), 0.40);
+  --accent-30: rgba(var(--ar), var(--ag), var(--ab), 0.30);
+  --accent-15: rgba(var(--ar), var(--ag), var(--ab), 0.15);
+  --accent-08: rgba(var(--ar), var(--ag), var(--ab), 0.08);
+
+  --bg: #000;
+  --panel: #0a0a0a;
+  --fg: #e6e6e6;
+  --muted:    rgba(var(--ar), var(--ag), var(--ab), 0.55);
+  --muted-2:  rgba(var(--ar), var(--ag), var(--ab), 0.25);
+  --border:   rgba(var(--ar), var(--ag), var(--ab), 0.18);
+  --border-hi:rgba(var(--ar), var(--ag), var(--ab), 0.30);
+  --ok: #8fb88f;
+  --bad: #b88f8f;
+  --phase-uptrend:   #4e8c5e;
+  --phase-downtrend: #8c4e4e;
+  --phase-ranging:   #555;
+  --phase-creep_up:  #8c7e3e;
+  --phase-creep_down:#6b4e8c;
+  --phase-unknown:   #333;
+  font-family: 'Fira Code', ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font-size: 12px; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--accent-08); }
+::-webkit-scrollbar-thumb { background: var(--accent-30); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-40); }
+
+.dashboard {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  height: 100vh;
+  grid-template-columns: 260px 1fr 320px;
+  grid-template-rows: 32px 1fr 1fr 1fr 1fr;
+  grid-template-areas:
+    "ticker   ticker  ticker"
+    "pnl      btc     detector"
+    "metrics  btc     detector"
+    "wm       flow    phases"
+    "news     flow    phases";
+  min-width: 1280px;
+}
+.a-ticker   { grid-area: ticker; }
+.a-pnl      { grid-area: pnl; }
+.a-metrics  { grid-area: metrics; }
+.a-btc      { grid-area: btc; }
+.a-detector { grid-area: detector; }
+.a-phases   { grid-area: phases; }
+.a-wm       { grid-area: wm; }
+.a-news     { grid-area: news; }
+.a-flow     { grid-area: flow; }
+
+.widget {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+/* Corner brackets */
+.widget::before,
+.widget::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+  z-index: 1;
+}
+.widget::before {
+  top: -1px; left: -1px;
+  border-top: 2px solid var(--accent-60);
+  border-left: 2px solid var(--accent-60);
+}
+.widget::after {
+  bottom: -1px; right: -1px;
+  border-bottom: 2px solid var(--accent-60);
+  border-right: 2px solid var(--accent-60);
+}
+.widget h3 {
+  margin: 0 0 8px;
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--muted);
+  text-transform: uppercase;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex: none;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--accent-15);
+}
+.widget .body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.placeholder { color: var(--muted-2); font-size: 11px; align-self: center; margin: auto; }
+
+/* Glow utilities */
+.glow { text-shadow: 0 0 8px var(--accent-40); }
+.glow-ok { text-shadow: 0 0 8px rgba(143, 184, 143, 0.5); }
+.glow-bad { text-shadow: 0 0 8px rgba(184, 143, 143, 0.5); }
+
+/* Value flash animation */
+@keyframes valueFlash {
+  0%   { color: var(--accent); text-shadow: 0 0 10px var(--accent-60); }
+  100% { color: inherit; text-shadow: none; }
+}
+.flash { animation: valueFlash 0.3s ease-out; }
+
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; font-size: 11px; }
+.kv .k { color: var(--muted); }
+.ok  { color: var(--ok); }
+.bad { color: var(--bad); }
+
+/* Cap BTC chart height in portrait viewports to avoid extreme vertical stretch */
+@media (max-aspect-ratio: 3/4) {
+  .a-btc svg {
+    max-height: 400px;
+  }
+}
+
+.ticker-row {
+  font-size: 11px; color: var(--muted); padding: 8px 12px;
+  border: 1px solid var(--border); background: var(--panel);
+  position: relative;
+}
+.ticker-row::before {
+  content: '';
+  position: absolute;
+  top: -1px; left: -1px;
+  width: 12px; height: 12px;
+  border-top: 2px solid var(--accent-60);
+  border-left: 2px solid var(--accent-60);
+  pointer-events: none;
+}

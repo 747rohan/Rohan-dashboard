@@ -1,0 +1,17 @@
+{
+  "name": "dashboard-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.21.2",
+    "express-basic-auth": "^1.2.1",
+    "hyparquet": "^1.11.0",
+    "ioredis": "^5.4.1"
+  }
+}

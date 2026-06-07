@@ -1,0 +1,30 @@
+# === Credentials — NEVER commit ===
+.dash-secrets
+Rohan_server001.txt
+Credo OKX/
+Credo2/
+Сделки/
+
+# === Не входит в репо (по решению пользователя) ===
+Примеры дизайна/
+demo-sci-fi.html
+solbot-architecture.json
+DashboardVault/
+
+# === Build artifacts ===
+**/node_modules/
+**/dist/
+**/_backup_v*/
+
+# === OS / IDE ===
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# === Logs / tarballs ===
+*.log
+*.tar.gz
+
+# === Claude Code metadata ===
+.claude/
