@@ -28,3 +28,7 @@ Thumbs.db
 
 # === Claude Code metadata ===
 .claude/
+
+# Python bytecode
+__pycache__/
+*.pyc
