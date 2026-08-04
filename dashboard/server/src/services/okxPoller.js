@@ -49,6 +49,23 @@ export function okxState() {
   };
 }
 
+async function readEquity() {
+  const c = client();
+  if (!c) return null;
+  try {
+    const data = await c.balance();
+    const row = data?.[0];
+    if (!row) return null;
+    const usdt = (row.details || []).find((d) => d.ccy === 'USDT');
+    const equity = Number(usdt?.eq);
+    return Number.isFinite(equity) ? equity : null;
+  } catch (e) {
+    state.lastError = e.message;
+    console.warn('[okx] readEquity failed:', e.message);
+    return null;
+  }
+}
+
 async function snapshotEquity() {
   const c = client();
   if (!c) return null;
@@ -156,12 +173,15 @@ export async function okxInit() {
   }
   ensureDir(path.dirname(config.okx.equityHistoryPath));
   if (!fs.existsSync(config.okx.equityHistoryPath)) {
+    // Seed the baseline from what the account actually holds — a fixed $100
+    // would show a phantom gain or loss from the very first snapshot.
+    const equity = (await readEquity()) ?? INITIAL_EQUITY;
     appendJsonl(config.okx.equityHistoryPath, {
       ts_ms: INITIAL_TS,
-      equity: INITIAL_EQUITY,
+      equity,
       source: 'inception',
     });
-    console.log(`[okx] seeded inception point $${INITIAL_EQUITY} at ${config.okx.startIso}`);
+    console.log(`[okx] seeded inception point $${equity} at ${config.okx.startIso}`);
   }
   await backfillClosed();
   await snapshotEquity();
