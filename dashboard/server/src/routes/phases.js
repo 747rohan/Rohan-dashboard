@@ -84,7 +84,10 @@ router.get('/distribution', (req, res) => {
     const HOUR = 3600_000;
     if (points.length >= 2) {
       const tsEnd = points[points.length - 1].ts;
-      const tsStart = tsEnd - (hours - 1) * HOUR;
+      // Never reach back past the first real bucket: filling the hours before
+      // it would extrapolate the oldest reading across the whole window and
+      // present a phase that was never observed.
+      const tsStart = Math.max(points[0].ts, tsEnd - (hours - 1) * HOUR);
       const realByTs = new Map(points.map((p) => [p.ts, p]));
       const have = points.slice();
       have.sort((a, b) => a.ts - b.ts);
