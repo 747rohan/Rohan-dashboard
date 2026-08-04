@@ -13,25 +13,29 @@ const BINANCE_INTERVALS = { '1m': '1m', '5m': '5m', '15m': '15m', '1h': '1h', '4
 
 function safeParse(s) { if (!s) return null; try { return JSON.parse(s); } catch { return null; } }
 
-// Live candle cache from Binance public API — fills gap between last parquet and now
-const _binanceCache = { tf: null, data: [], fetchedAt: 0 };
+// Candle cache from the Binance public API. It fills the gap after the last
+// parquet file, and carries the whole series where no parquet files exist.
+const _binanceCache = { key: null, data: [], fetchedAt: 0 };
 const BINANCE_CACHE_TTL = 5 * 60_000; // 5 min
+const BINANCE_MAX_LIMIT = 1000;
 
 async function fetchBinanceLiveCandles(tf = '1h', limit = 48) {
+  const capped = Math.min(Math.max(Math.ceil(limit) || 48, 2), BINANCE_MAX_LIMIT);
+  const key = `${tf}:${capped}`;
   const now = Date.now();
-  if (_binanceCache.tf === tf && now - _binanceCache.fetchedAt < BINANCE_CACHE_TTL && _binanceCache.data.length > 0) {
+  if (_binanceCache.key === key && now - _binanceCache.fetchedAt < BINANCE_CACHE_TTL && _binanceCache.data.length > 0) {
     return _binanceCache.data;
   }
   try {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 8000);
-    const url = `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${BINANCE_INTERVALS[tf] || '1h'}&limit=${limit}`;
+    const url = `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${BINANCE_INTERVALS[tf] || '1h'}&limit=${capped}`;
     const r = await fetch(url, { signal: ctrl.signal });
     clearTimeout(to);
     if (!r.ok) throw new Error(`Binance ${r.status}`);
     const klines = await r.json();
     const points = klines.map((k) => ({ ts: Number(k[0]), close: Number(k[4]), real: true, source: 'binance' }));
-    _binanceCache.tf = tf;
+    _binanceCache.key = key;
     _binanceCache.data = points;
     _binanceCache.fetchedAt = now;
     return points;
@@ -45,18 +49,18 @@ router.get('/price', async (req, res) => {
   try {
     const tf = ALLOWED_TF.has(req.query.tf) ? req.query.tf : '1h';
     const dir = path.join(config.solbot.dataDir, 'candles', 'BTCUSDT', tf);
+    // Missing parquet candles is normal on hosts without an ob-recorder —
+    // Binance then supplies the whole series instead of only the tail.
     const files = listParquetFilesSorted(dir);
-    if (files.length === 0) {
-      return res.status(404).json({ error: `no candles for BTCUSDT ${tf}` });
-    }
 
     const step = TF_MS[tf];
     let tsStart, tsEnd;
     const fromIso = req.query.from;
     const barsPerDay = { '1m': 1440, '5m': 288, '15m': 96, '1h': 24, '4h': 6, '1d': 1 }[tf];
 
-    // Decide which files to read
+    // Decide which files to read, and how many bars Binance has to cover
     let take;
+    let binanceBars;
     if (fromIso) {
       const fromMs = Date.parse(fromIso);
       if (!Number.isFinite(fromMs)) return res.status(400).json({ error: 'bad from= param' });
@@ -65,11 +69,13 @@ router.get('/price', async (req, res) => {
       const fromDate = new Date(tsStart).toISOString().slice(0, 10);
       take = files.filter((f) => f.slice(0, 10) >= fromDate);
       if (take.length === 0) take = files.slice(-1);
+      binanceBars = Math.ceil((Date.now() - tsStart) / step) + 2;
     } else {
       const limit = Math.min(Number(req.query.limit) || 200, 2000);
       const needFiles = Math.min(files.length, Math.ceil(limit / barsPerDay) + 5);
       take = files.slice(-needFiles);
       tsStart = null; // set from raw later
+      binanceBars = limit + 2;
     }
 
     const rawMap = new Map();
@@ -82,7 +88,7 @@ router.get('/price', async (req, res) => {
       }
     }
     // Merge live candles from Binance to cover gap after last parquet file
-    const binanceLive = await fetchBinanceLiveCandles(tf, 48);
+    const binanceLive = await fetchBinanceLiveCandles(tf, binanceBars);
     for (const b of binanceLive) {
       if (!rawMap.has(b.ts)) rawMap.set(b.ts, b.close);
     }
