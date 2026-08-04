@@ -2,12 +2,13 @@ import { Router } from 'express';
 
 const router = Router();
 
+// The 22 symbols the 7RL trade system evaluates each tick
 const SYMBOLS = [
-  'ADAUSDT', 'APTUSDT', 'ARBUSDT', 'AVAXUSDT', 'BNBUSDT',
-  'BTCUSDT', 'DOGEUSDT', 'ENAUSDT', 'ETHUSDT', 'HBARUSDT',
-  'INJUSDT', 'LTCUSDT', 'NEARUSDT', 'OPUSDT', 'POLUSDT',
-  'SEIUSDT', 'SOLUSDT', 'SUIUSDT', 'TIAUSDT', 'TRUMPUSDT',
-  'WIFUSDT', 'XRPUSDT',
+  'ADAUSDT', 'APTUSDT', 'ARBUSDT', 'ATOMUSDT', 'AVAXUSDT',
+  'BNBUSDT', 'BTCUSDT', 'DOGEUSDT', 'DOTUSDT', 'ETHUSDT',
+  'FILUSDT', 'INJUSDT', 'LINKUSDT', 'LTCUSDT', 'NEARUSDT',
+  'OPUSDT', 'POLUSDT', 'SOLUSDT', 'SUIUSDT', 'TIAUSDT',
+  'TRXUSDT', 'XRPUSDT',
 ];
 
 const BOOK_TICKER_URL =
