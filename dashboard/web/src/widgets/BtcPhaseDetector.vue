@@ -80,7 +80,7 @@ const deltaCls = (d) => {
 <template>
   <div class="widget a-detector">
     <h3>
-      <span>btc · phase detector v2</span>
+      <span>market · phase detector v2</span>
     </h3>
     <div class="body">
       <div v-if="error" class="bad" style="font-size:10px">err: {{ error }}</div>

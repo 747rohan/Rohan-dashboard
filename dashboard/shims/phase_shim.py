@@ -9,10 +9,11 @@ the increments of that counter reconstructs the live phase of every symbol.
 From that this shim maintains two things the dashboard already knows how to read:
 
   * `orchestrator.db` — `phase_history` and `decisions` rows in the original
-    Solbot schema, driven by BTC/USDT. `phase_probs` is the occupancy of each
-    phase over the trailing hour, `dominant_phase` is the phase right now, and
-    `confidence` is the trailing-hour occupancy of that phase. Predictions come
-    from a Markov matrix estimated from 5-minute samples of all 22 symbols.
+    Solbot schema. `phase_probs` is the share of instruments in each phase,
+    `dominant_phase` is the phase most of them are in and `confidence` is its
+    share. A single symbol would only ever be one-hot here, because 7RL reports
+    one hard phase per symbol rather than a distribution. Predictions come from
+    a Markov matrix estimated from 5-minute samples of all 22 symbols.
   * `POST /api/phases/ingest` — the current phase of every symbol, for the
     PhasesByInstrument grid.
 
@@ -44,8 +45,7 @@ INGEST_KEY = os.environ.get("PHASES_INGEST_KEY", "")
 PHASES = ["uptrend", "downtrend", "ranging", "creep_up", "creep_down"]
 PHASE_IDX = {p: i for i, p in enumerate(PHASES)}
 
-BTC = "BTC/USDT"
-OCCUPANCY_WINDOW_MS = 3600_000  # trailing hour behind phase_probs
+OCCUPANCY_WINDOW_MS = 3600_000  # trailing hour behind per-symbol confidence
 HISTORY_KEEP_MS = 26 * 3600_000  # keep a bit more than a day of transitions
 
 INGEST_EVERY = 15.0
@@ -151,6 +151,25 @@ class PhaseState:
             return {p: (1.0 if p == cur else 0.0) for p in PHASES}
         return {p: v / total for p, v in spent.items()}
 
+    def market_probs(self):
+        """Share of instruments sitting in each phase right now.
+
+        7RL reports a single hard phase per symbol, so a one-symbol view can
+        only ever be one-hot. Counting across all symbols gives a real
+        distribution over the five phases, which is what the chart overlay and
+        the detector are built to show.
+        """
+        counts = {p: 0 for p in PHASES}
+        total = 0
+        for symbol in self.history:
+            phase = self.current_phase(symbol)
+            if phase in counts:
+                counts[phase] += 1
+                total += 1
+        if total == 0:
+            return None
+        return {p: c / total for p, c in counts.items()}
+
     # ---- markov ----------------------------------------------------------
     def sample_markov(self):
         for symbol, hist in self.history.items():
@@ -225,12 +244,12 @@ def open_db():
 
 
 def write_db_rows(conn, state, now_ms):
-    probs = state.occupancy(BTC, now_ms)
-    dominant = state.current_phase(BTC)
-    if not probs or not dominant:
+    probs = state.market_probs()
+    if not probs:
         return False
+    dominant = max(PHASES, key=lambda p: probs[p])
     ts = iso_utc(now_ms)
-    confidence = probs.get(dominant, 0.0)
+    confidence = probs[dominant]
     mat = state.transition_matrix()
     preds = {h: predict(probs, mat, k) for h, k in HORIZON_STEPS.items()}
     probs_json = json.dumps(probs)
