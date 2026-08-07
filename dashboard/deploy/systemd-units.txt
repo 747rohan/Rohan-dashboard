@@ -1,0 +1,52 @@
+===== dash-phase-shim.service
+[Unit]
+Description=Dashboard phase shim (7RL metrics.jsonl -> orchestrator.db + phases ingest)
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+EnvironmentFile=/opt/dashboard/dashboard.env
+ExecStart=/usr/bin/python3 /opt/dashboard/shim/phase_shim.py
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
+===== dash-bot-log.service
+[Unit]
+Description=Dashboard bot.log shim (7RL JSON log -> pb.log)
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+EnvironmentFile=/opt/dashboard/dashboard.env
+ExecStart=/usr/bin/python3 /opt/dashboard/shim/bot_log_shim.py
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
+===== dash-wm-warm.service
+[Unit]
+Description=Keep the worldmonitor Redis cache warm for the dashboard
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dashboard/worldmonitor/warm.sh
+Nice=10
+===== dash-wm-warm.timer
+[Unit]
+Description=Warm the worldmonitor cache every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
