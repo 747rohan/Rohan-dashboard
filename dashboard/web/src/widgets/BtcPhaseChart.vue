@@ -38,6 +38,12 @@ const PAD_T = 10;
 const PAD_B = 32; // more room for X-axis labels
 
 const PHASES = ['uptrend', 'creep_up', 'ranging', 'creep_down', 'downtrend'];
+// `ranging` is the classifier's resting state — it holds ~64% of the market on
+// an average hour, which pins the four directional phases into the bottom
+// third of the chart. Drawing only the directional ones, on a scale of their
+// own, is what makes a turn in the market visible. The crosshair still reports
+// all five.
+const PLOT_PHASES = PHASES.filter((p) => p !== 'ranging');
 const phaseColor = (p) => `var(--phase-${p})`;
 
 const liveBtc = computed(() => {
@@ -110,9 +116,6 @@ const view = computed(() => {
   const invX = (px) => tsMin + ((px - PAD_L) / chartW) * (tsMax - tsMin);
   const yPrice = (v) => PAD_T + (1 - (v - lo) / (hi - lo)) * chartH;
   const invYPrice = (py) => hi - ((py - PAD_T) / chartH) * (hi - lo);
-  const yPct = (v) => PAD_T + (1 - v) * chartH;
-  const invYPct = (py) => 1 - (py - PAD_T) / chartH;
-
   // Single continuous price path
   const pricePath = pts
     .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.ts).toFixed(1)},${yPrice(p.close).toFixed(1)}`)
@@ -120,8 +123,22 @@ const view = computed(() => {
 
   // Phase points (already continuous after backend interpolation)
   const phPoints = (phaseData.value?.points || []).filter((p) => p.ts >= tsMin && p.ts <= tsMax);
+
+  // Scale the phase axis to the directional phases actually on screen, rounded
+  // up to a whole 5%, so a quiet market does not flatten them onto the floor.
+  const plottedVals = [];
+  for (const p of phPoints) {
+    for (const ph of PLOT_PHASES) {
+      const v = p[ph];
+      if (Number.isFinite(v)) plottedVals.push(v);
+    }
+  }
+  const pctMax = Math.min(1, Math.max(0.1, Math.ceil(Math.max(0, ...plottedVals) * 20) / 20));
+  const yPct = (v) => PAD_T + (1 - v / pctMax) * chartH;
+  const invYPct = (py) => (1 - (py - PAD_T) / chartH) * pctMax;
+
   const phaseLines = {};
-  for (const ph of PHASES) {
+  for (const ph of PLOT_PHASES) {
     const segs = [];
     for (let i = 0; i < phPoints.length; i++) {
       const p = phPoints[i];
@@ -137,7 +154,7 @@ const view = computed(() => {
     y: PAD_T + (1 - frac) * chartH,
   }));
   const pctTicks = [0, 0.25, 0.5, 0.75, 1].map((frac) => ({
-    v: frac,
+    v: frac * pctMax,
     y: PAD_T + (1 - frac) * chartH,
   }));
 
@@ -148,7 +165,7 @@ const view = computed(() => {
     pts, phPoints,
     tsMin, tsMax, lo, hi,
     chartW, chartH,
-    pricePath, phaseLines, priceTicks, pctTicks, timeTicks,
+    pricePath, phaseLines, priceTicks, pctTicks, timeTicks, pctMax,
     x, yPrice, yPct, invX, invYPrice, invYPct,
     last: pts[pts.length - 1],
     lastX: x(pts[pts.length - 1].ts),
@@ -267,7 +284,7 @@ const fmtTs = (ts) => new Date(ts).toLocaleString();
         <!-- phase lines -->
         <g fill="none" stroke-width="1" stroke-linejoin="round">
           <path
-            v-for="ph in PHASES" :key="ph"
+            v-for="ph in PLOT_PHASES" :key="ph"
             :d="view.phaseLines[ph]"
             :stroke="phaseColor(ph)"
             stroke-opacity="0.85"
@@ -288,10 +305,13 @@ const fmtTs = (ts) => new Date(ts).toLocaleString();
             <line x1="0" x2="12" y1="0" y2="0" stroke="var(--fg)" stroke-width="1.3" />
             <text x="18" y="3" fill="var(--muted)" font-size="9">price</text>
           </g>
-          <g v-for="(ph, i) in PHASES" :key="ph" :transform="`translate(${70 + i * 90}, 0)`">
+          <g v-for="(ph, i) in PLOT_PHASES" :key="ph" :transform="`translate(${70 + i * 90}, 0)`">
             <line x1="0" x2="12" y1="0" y2="0" :stroke="phaseColor(ph)" stroke-width="1.1" />
             <text x="18" y="3" fill="var(--muted)" font-size="9">{{ ph }}</text>
           </g>
+          <text :x="70 + PLOT_PHASES.length * 90" y="3" fill="var(--muted-2)" font-size="9">
+            ranging скрыт · шкала 0–{{ fmtPct(view.pctMax) }}
+          </text>
         </g>
 
         <!-- crosshair -->
