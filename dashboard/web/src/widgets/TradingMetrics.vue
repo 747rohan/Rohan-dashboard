@@ -7,7 +7,14 @@ const { data, error } = usePolling('/api/trading/metrics', 15_000);
 const s = computed(() => data.value?.summary || {});
 
 const FIELDS = [
-  { key: 'bots',          label: 'bots',          fmt: (v) => (v != null ? String(v) : '—') },
+  // Accounts that can place orders, out of those still ticking — a dry-run
+  // account shows up in the total but never trades, and "1/2" says that where
+  // a bare "2" used to imply both were working.
+  { key: 'bots',          label: 'bots',          fmt: (v, all) => {
+      if (v == null) return '—';
+      const total = all?.bots_total;
+      return Number.isFinite(total) && total !== v ? `${v}/${total}` : String(v);
+    } },
   { key: 'trades',        label: 'trades',        fmt: (v) => (Number.isFinite(v) ? String(v) : '—') },
   { key: 'win_rate',      label: 'win-rate',      fmt: (v) => (Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '—') },
   { key: 'sharpe',        label: 'sharpe',        fmt: (v) => (Number.isFinite(v) ? v.toFixed(2) : '—') },
@@ -32,7 +39,7 @@ const valCls = (key, v) => {
       <div v-else class="fields">
         <div v-for="f in FIELDS" :key="f.key" class="field">
           <span class="k">{{ f.label }}</span>
-          <span class="v" :class="valCls(f.key, s[f.key])">{{ f.fmt(s[f.key]) }}</span>
+          <span class="v" :class="valCls(f.key, s[f.key])">{{ f.fmt(s[f.key], s) }}</span>
         </div>
       </div>
     </div>

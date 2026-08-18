@@ -1,33 +1,9 @@
 import { Router } from 'express';
 import fs from 'node:fs';
-import path from 'node:path';
 import { config } from '../config.js';
+import { tailLines } from '../lib/tail.js';
 
 const router = Router();
-
-function tailLines(file, nLines) {
-  const st = fs.statSync(file);
-  const chunkSize = 4096;
-  const buffers = [];
-  let pos = st.size;
-  let lines = 0;
-  const fd = fs.openSync(file, 'r');
-  try {
-    while (pos > 0 && lines <= nLines) {
-      const read = Math.min(chunkSize, pos);
-      pos -= read;
-      const buf = Buffer.alloc(read);
-      fs.readSync(fd, buf, 0, read, pos);
-      buffers.unshift(buf);
-      for (const b of buf) if (b === 0x0a) lines++;
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  const text = Buffer.concat(buffers).toString('utf8');
-  const arr = text.split('\n').filter(Boolean);
-  return arr.slice(-nLines);
-}
 
 router.get('/pb-tail', (req, res) => {
   try {

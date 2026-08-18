@@ -2,8 +2,35 @@ import { Router } from 'express';
 import fs from 'node:fs';
 import { config } from '../config.js';
 import { okxState } from '../services/okxPoller.js';
+import { tailLines } from '../lib/tail.js';
 
 const router = Router();
+
+// Each tick the trade system logs one line per account, tagged with the mode it
+// is running in: `live_no_decisions account=x ...`, `dry_run_no_decisions ...`
+// or `live_decision ...`. The tail of the log is therefore the roster of
+// accounts that are still ticking, and which of them can actually place orders.
+const ACCOUNT_LINE = /\b(live|dry_run)_(?:no_)?decisions?\b.*?\baccount=(\S+)/;
+
+function readBots() {
+  try {
+    if (!fs.existsSync(config.solbot.pbLog)) return null;
+    const modeByAccount = new Map();
+    for (const line of tailLines(config.solbot.pbLog, 600)) {
+      const m = line.match(ACCOUNT_LINE);
+      if (m) modeByAccount.set(m[2], m[1]); // later lines win
+    }
+    if (modeByAccount.size === 0) return null;
+    const accounts = [...modeByAccount.entries()].map(([id, mode]) => ({ id, mode }));
+    return {
+      live: accounts.filter((a) => a.mode === 'live').length,
+      total: accounts.length,
+      accounts: accounts.sort((a, b) => a.id.localeCompare(b.id)),
+    };
+  } catch {
+    return null;
+  }
+}
 
 const INITIAL_EQUITY = 100.0;
 const INITIAL_TS = Date.parse(config.okx.startIso);
@@ -114,9 +141,13 @@ router.get('/metrics', (req, res) => {
       }
     }
 
+    const bots = readBots();
     res.json({
       summary: {
-        bots: 2,
+        // How many accounts can actually place orders — a dry-run account is
+        // still ticking but cannot trade, so counting it would overstate this.
+        bots: bots ? bots.live : null,
+        bots_total: bots ? bots.total : null,
         trades,
         win_rate: winRate,
         sharpe,
@@ -124,6 +155,7 @@ router.get('/metrics', (req, res) => {
         profit_factor: profitFactor,
       },
       debug: {
+        accounts: bots?.accounts ?? null,
         by_net:   { wins, losses, zeros, sum_win: sumWin, sum_loss: sumLoss },
         by_gross: { wins: altGrossWins, losses: altGrossLosses },
         curve_points: curve.length,
