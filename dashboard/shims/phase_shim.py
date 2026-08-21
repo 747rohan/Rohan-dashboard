@@ -101,6 +101,11 @@ class PhaseState:
         self.bootstrapped = False  # past the opening snapshot of lifetime totals
         self.btc_phase = None  # BTC's own phase, straight from the trade log
         self.btc_phase_ts = 0
+        # Filled once 7RL publishes phase state as gauges (deploy/7rl-phase-gauge).
+        # Gauges are re-exported every flush, so unlike the transition counters
+        # they stay current through a stable regime and across restarts.
+        self.gauge = {}  # symbol -> {probs, confidence, vol_regime, ts}
+        self.seen = {}   # symbol -> ts we last heard anything about it
 
     # ---- persistence -----------------------------------------------------
     def load(self):
@@ -117,6 +122,8 @@ class PhaseState:
             self.matrix = matrix
         self.last_sample = raw.get("last_sample", {})
         self.last_ts = raw.get("last_ts", 0)
+        self.gauge = raw.get("gauge", {})
+        self.seen = raw.get("seen", {})
         # Restored counters already are the baseline, so the next line we read
         # carries news rather than lifetime totals.
         self.bootstrapped = bool(self.counters)
@@ -130,6 +137,8 @@ class PhaseState:
             "matrix": self.matrix,
             "last_sample": self.last_sample,
             "last_ts": self.last_ts,
+            "gauge": self.gauge,
+            "seen": self.seen,
         }
         try:
             with open(tmp, "w", encoding="utf-8") as fh:
@@ -151,6 +160,14 @@ class PhaseState:
     def current_phase(self, symbol):
         hist = self.history.get(symbol)
         return hist[-1][1] if hist else None
+
+    def last_seen(self, symbol):
+        """When this symbol last told us anything, gauge or transition."""
+        ts = self.seen.get(symbol)
+        if ts:
+            return ts
+        hist = self.history.get(symbol)
+        return hist[-1][0] if hist else None
 
     def occupancy(self, symbol, now_ms):
         """Share of the trailing hour spent in each phase."""
@@ -271,7 +288,15 @@ def write_db_rows(conn, state, now_ms):
     # few hours and the counters restart with it, while the log states BTC's
     # phase outright on every tick.
     dominant = state.btc_phase or max(PHASES, key=lambda p: probs[p])
-    btc_probs = {p: (1.0 if p == dominant else 0.0) for p in PHASES}
+    # Once 7RL publishes phase_probability, the detector can show BTC's real
+    # distribution instead of a one-hot flag rendered as "100%".
+    btc_gauge = (state.gauge.get("BTC/USDT") or {}).get("probs") or {}
+    if len(btc_gauge) == len(PHASES):
+        total = sum(btc_gauge.values()) or 1.0
+        btc_probs = {p: btc_gauge.get(p, 0.0) / total for p in PHASES}
+        dominant = max(PHASES, key=lambda p: btc_probs[p])
+    else:
+        btc_probs = {p: (1.0 if p == dominant else 0.0) for p in PHASES}
     ts = iso_utc(now_ms)
     # How much of the market agrees with BTC right now.
     confidence = probs[dominant]
@@ -311,8 +336,8 @@ def post_ingest(state, now_ms):
     entries = []
     for symbol in sorted(state.history):
         phase = state.current_phase(symbol)
-        hist = state.history.get(symbol) or []
-        age_ms = now_ms - hist[-1][0] if hist else None
+        seen = state.last_seen(symbol)
+        age_ms = now_ms - seen if seen else None
         # BTC is stated outright in the trade log every tick, so prefer that
         # over anything reconstructed from the counters.
         if symbol == "BTC/USDT" and state.btc_phase:
@@ -321,12 +346,17 @@ def post_ingest(state, now_ms):
         if not phase:
             continue
         occ = state.occupancy(symbol, now_ms) or {}
+        g = state.gauge.get(symbol) or {}
+        # 7RL's own numbers where it publishes them, ours only as a fallback.
+        confidence = g.get("confidence")
+        if confidence is None:
+            confidence = occ.get(phase, 0.0)
         entries.append(
             {
                 "instId": symbol.replace("/", "-"),
                 "phase": phase,
-                "confidence": round(occ.get(phase, 0.0), 4),
-                "vol_regime": "normal",
+                "confidence": round(float(confidence), 4),
+                "vol_regime": g.get("vol_regime") or "normal",
                 # How long since this symbol last told us anything. 7RL stopped
                 # emitting per-symbol phase changes, so most of these only get
                 # older — the grid has to show that rather than imply "now".
@@ -360,14 +390,61 @@ def post_ingest(state, now_ms):
 # --------------------------------------------------------------------------
 # metrics.jsonl tail
 # --------------------------------------------------------------------------
+PHASE_GAUGES = ("phase_probability", "phase_confidence", "phase_vol_regime")
+VOL_REGIME_BY_CODE = {0: "low", 1: "normal", 2: "high"}
+
+
+def handle_gauge(state, rec, ts_ms):
+    """Absorb the phase-state gauges 7RL publishes per tick.
+
+    Preferred over the transition counters wherever present: gauges restate the
+    phase on every flush, so they neither go quiet during a stable regime nor
+    reset when the process restarts.
+    """
+    name = rec.get("name")
+    labels = rec.get("labels") or {}
+    symbol = labels.get("symbol")
+    if not symbol:
+        return
+    try:
+        value = float(rec.get("value"))
+    except (TypeError, ValueError):
+        return
+    slot = state.gauge.setdefault(symbol, {"probs": {}, "confidence": None, "vol_regime": None, "ts": 0})
+    if name == "phase_probability":
+        phase = labels.get("phase")
+        if phase not in PHASE_IDX:
+            return
+        slot["probs"][phase] = value
+    elif name == "phase_confidence":
+        slot["confidence"] = value
+    elif name == "phase_vol_regime":
+        slot["vol_regime"] = VOL_REGIME_BY_CODE.get(int(value))
+    slot["ts"] = ts_ms
+    state.seen[symbol] = ts_ms
+    probs = slot["probs"]
+    if len(probs) == len(PHASES):
+        dominant = max(probs, key=probs.get)
+        # Record it as a transition so occupancy, the markov matrix and the
+        # grid all keep working off one representation.
+        if state.current_phase(symbol) != dominant:
+            state.apply_transition(symbol, dominant, ts_ms)
+
+
 def handle_line(state, line):
-    if "phase_changes_total" not in line:
+    if "phase_changes_total" not in line and not any(g in line for g in PHASE_GAUGES):
         return
     try:
         rec = json.loads(line)
     except ValueError:
         return
-    if rec.get("name") != "phase_changes_total":
+    name = rec.get("name")
+    if name in PHASE_GAUGES:
+        ts_ms = parse_ts(rec.get("ts"))
+        if ts_ms is not None:
+            handle_gauge(state, rec, ts_ms)
+        return
+    if name != "phase_changes_total":
         return
     labels = rec.get("labels") or {}
     symbol = labels.get("symbol")
@@ -390,6 +467,7 @@ def handle_line(state, line):
     elif not state.bootstrapped and ts_ms - state.first_ts > 2_000:
         state.bootstrapped = True
 
+    state.seen[symbol] = ts_ms
     key = f"{symbol}|{from_phase}|{to_phase}"
     value = rec.get("value")
     try:

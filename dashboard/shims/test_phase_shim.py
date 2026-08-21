@@ -158,4 +158,46 @@ with open(pb, "a", encoding="utf-8") as fh:
 S.refresh_btc_phase(st, now)
 assert st.btc_phase == "uptrend"
 print("BTC phase from log:", st.btc_phase)
+
+# --- phase gauges: preferred over the transition counters when 7RL publishes them
+def gauge(ts_ms, name, value, **labels):
+    ts = datetime.fromtimestamp(ts_ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return json.dumps({"ts": ts, "name": name, "kind": "gauge", "value": value, "labels": labels})
+
+g = S.PhaseState()
+g.bootstrapped = True
+T1 = T0 + 7200_000
+probs = {"uptrend": 0.55, "downtrend": 0.05, "ranging": 0.25, "creep_up": 0.10, "creep_down": 0.05}
+for ph, v in probs.items():
+    S.handle_line(g, gauge(T1, "phase_probability", v, symbol="BTC/USDT", phase=ph))
+S.handle_line(g, gauge(T1, "phase_confidence", 0.55, symbol="BTC/USDT"))
+S.handle_line(g, gauge(T1, "phase_vol_regime", 2, symbol="BTC/USDT"))
+assert g.current_phase("BTC/USDT") == "uptrend", g.current_phase("BTC/USDT")
+assert g.gauge["BTC/USDT"]["vol_regime"] == "high"
+assert g.last_seen("BTC/USDT") == T1
+print("gauge -> фаза:", g.current_phase("BTC/USDT"), "| vol:", g.gauge["BTC/USDT"]["vol_regime"])
+
+# a stable regime keeps the reading fresh even though nothing changed
+for ph, v in probs.items():
+    S.handle_line(g, gauge(T1 + 60_000, "phase_probability", v, symbol="BTC/USDT", phase=ph))
+assert g.last_seen("BTC/USDT") == T1 + 60_000
+assert len(g.history["BTC/USDT"]) == 1, "неизменная фаза не должна плодить переходы"
+
+# the detector now carries the real distribution rather than a one-hot flag
+g.btc_phase = "uptrend"
+conn3 = S.open_db()
+assert S.write_db_rows(conn3, g, T1 + 60_000) is True
+cur = json.loads(conn3.execute("SELECT phase_current FROM decisions ORDER BY id DESC LIMIT 1").fetchone()[0])
+assert abs(cur["uptrend"] - 0.55) < 1e-6 and abs(cur["ranging"] - 0.25) < 1e-6, cur
+assert sum(1 for v in cur.values() if v > 0) == 5
+conn3.close()
+print("detector phase_current:", {k: round(v, 2) for k, v in cur.items()})
+
+# and the ingest payload passes 7RL's own confidence and vol_regime through
+sent.clear()
+S.post_ingest(g, T1 + 60_000)
+btc = [p for p in sent["body"]["phases"] if p["instId"] == "BTC-USDT"][0]
+assert abs(btc["confidence"] - 0.55) < 1e-6 and btc["vol_regime"] == "high", btc
+assert btc["age_s"] == 0, btc
+print("ingest BTC:", btc)
 print("ALL TESTS PASSED")
