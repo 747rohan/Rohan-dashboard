@@ -5,7 +5,10 @@ import { usePolling } from '../composables/usePolling.js';
 const WINDOW_DAYS = 10;
 const fromIso = () => new Date(Date.now() - WINDOW_DAYS * 86400_000).toISOString();
 const priceUrl = computed(() => `/api/btc/price?tf=1h&from=${fromIso()}`);
-const phaseUrl = computed(() => `/api/phases/distribution?from=${fromIso()}&smooth=5`);
+// BTC's own phase per hour. The market-wide distribution that used to live
+// here depended on 7RL's per-symbol change counters, which it stopped
+// emitting — the lines kept drawing week-old values as if they were current.
+const phaseUrl = computed(() => `/api/phases/history?from=${fromIso()}`);
 const { data: priceData, error: priceErr } = usePolling(priceUrl, 30_000);
 const { data: phaseData } = usePolling(phaseUrl, 30_000);
 const { data: tickData } = usePolling('/api/btc/tick', 1_000);
@@ -36,14 +39,10 @@ const PAD_L = 44;
 const PAD_R = 58;
 const PAD_T = 10;
 const PAD_B = 32; // more room for X-axis labels
+const BAND_H = 14;  // phase ribbon under the price
+const BAND_GAP = 4;
 
 const PHASES = ['uptrend', 'creep_up', 'ranging', 'creep_down', 'downtrend'];
-// `ranging` is the classifier's resting state — it holds ~64% of the market on
-// an average hour, which pins the four directional phases into the bottom
-// third of the chart. Drawing only the directional ones, on a scale of their
-// own, is what makes a turn in the market visible. The crosshair still reports
-// all five.
-const PLOT_PHASES = PHASES.filter((p) => p !== 'ranging');
 const phaseColor = (p) => `var(--phase-${p})`;
 
 const liveBtc = computed(() => {
@@ -112,61 +111,55 @@ const view = computed(() => {
 
   const chartW = W - PAD_L - PAD_R;
   const chartH = H - PAD_T - PAD_B;
+  // The price keeps everything except the ribbon strip along the bottom.
+  const priceH = chartH - BAND_H - BAND_GAP;
+  const bandY = PAD_T + priceH + BAND_GAP;
   const x = (t) => PAD_L + ((t - tsMin) / Math.max(tsMax - tsMin, 1)) * chartW;
   const invX = (px) => tsMin + ((px - PAD_L) / chartW) * (tsMax - tsMin);
-  const yPrice = (v) => PAD_T + (1 - (v - lo) / (hi - lo)) * chartH;
-  const invYPrice = (py) => hi - ((py - PAD_T) / chartH) * (hi - lo);
+  const yPrice = (v) => PAD_T + (1 - (v - lo) / (hi - lo)) * priceH;
+  const invYPrice = (py) => hi - ((py - PAD_T) / priceH) * (hi - lo);
   // Single continuous price path
   const pricePath = pts
     .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.ts).toFixed(1)},${yPrice(p.close).toFixed(1)}`)
     .join(' ');
 
-  // Phase points (already continuous after backend interpolation)
+  // BTC's phase per hour, drawn as a ribbon. One hard phase at a time is what
+  // 7RL actually reports, so a band states it plainly instead of dressing it up
+  // as a distribution that would sit at 100% or 0% and nothing between.
   const phPoints = (phaseData.value?.points || []).filter((p) => p.ts >= tsMin && p.ts <= tsMax);
-
-  // Scale the phase axis to the directional phases actually on screen, rounded
-  // up to a whole 5%, so a quiet market does not flatten them onto the floor.
-  const plottedVals = [];
-  for (const p of phPoints) {
-    for (const ph of PLOT_PHASES) {
-      const v = p[ph];
-      if (Number.isFinite(v)) plottedVals.push(v);
+  const HOUR = 3600_000;
+  const bandSegs = [];
+  for (let i = 0; i < phPoints.length; i++) {
+    const p = phPoints[i];
+    if (!p.phase) continue;
+    const endTs = Math.min(i + 1 < phPoints.length ? phPoints[i + 1].ts : p.ts + HOUR, tsMax);
+    const last = bandSegs[bandSegs.length - 1];
+    // Merge runs of the same phase so a week of ranging is one rect, not 170.
+    if (last && last.phase === p.phase && Math.abs(last.tsEnd - p.ts) < HOUR / 2) {
+      last.tsEnd = endTs;
+    } else {
+      bandSegs.push({ phase: p.phase, tsStart: p.ts, tsEnd: endTs });
     }
   }
-  const pctMax = Math.min(1, Math.max(0.1, Math.ceil(Math.max(0, ...plottedVals) * 20) / 20));
-  const yPct = (v) => PAD_T + (1 - v / pctMax) * chartH;
-  const invYPct = (py) => (1 - (py - PAD_T) / chartH) * pctMax;
-
-  const phaseLines = {};
-  for (const ph of PLOT_PHASES) {
-    const segs = [];
-    for (let i = 0; i < phPoints.length; i++) {
-      const p = phPoints[i];
-      const v = p[ph];
-      if (v == null || !Number.isFinite(v)) continue;
-      segs.push(`${i === 0 ? 'M' : 'L'}${x(p.ts).toFixed(1)},${yPct(v).toFixed(1)}`);
-    }
-    phaseLines[ph] = segs.join(' ');
+  for (const s of bandSegs) {
+    s.x = x(s.tsStart);
+    s.w = Math.max(1, x(s.tsEnd) - x(s.tsStart));
   }
 
   const priceTicks = [0, 0.25, 0.5, 0.75, 1].map((frac) => ({
     v: lo + frac * (hi - lo),
-    y: PAD_T + (1 - frac) * chartH,
-  }));
-  const pctTicks = [0, 0.25, 0.5, 0.75, 1].map((frac) => ({
-    v: frac * pctMax,
-    y: PAD_T + (1 - frac) * chartH,
+    y: PAD_T + (1 - frac) * priceH,
   }));
 
   const { ticks: timeTickTs, step: timeStep } = pickTimeTicks(tsMin, tsMax);
   const timeTicks = timeTickTs.map((t) => ({ ts: t, x: x(t), label: fmtTsAxis(t, timeStep) }));
 
   return {
-    pts, phPoints,
+    pts, phPoints, bandSegs, bandY,
     tsMin, tsMax, lo, hi,
-    chartW, chartH,
-    pricePath, phaseLines, priceTicks, pctTicks, timeTicks, pctMax,
-    x, yPrice, yPct, invX, invYPrice, invYPct,
+    chartW, chartH, priceH,
+    pricePath, priceTicks, timeTicks,
+    x, yPrice, invX, invYPrice,
     last: pts[pts.length - 1],
     lastX: x(pts[pts.length - 1].ts),
     lastY: yPrice(pts[pts.length - 1].close),
@@ -190,7 +183,7 @@ const cross = computed(() => {
     const d = Math.abs(p.ts - ts);
     if (d < bestPD) { bestPD = d; nph = p; }
   }
-  return { x: h.x, y: h.y, ts, nearest, nph, atPrice: v.invYPrice(h.y), atPct: v.invYPct(h.y) };
+  return { x: h.x, y: h.y, ts, nearest, nph, atPrice: v.invYPrice(h.y) };
 });
 
 function svgCoords(clientX, clientY) {
@@ -250,14 +243,6 @@ const fmtTs = (ts) => new Date(ts).toLocaleString();
             stroke="var(--border-hi)" stroke-width="0.5" stroke-dasharray="2,3"
           />
         </g>
-        <!-- left axis: % -->
-        <g>
-          <text
-            v-for="(t, i) in view.pctTicks" :key="'lpct'+i"
-            :x="PAD_L - 6" :y="t.y + 3"
-            text-anchor="end" fill="var(--muted)" font-size="9"
-          >{{ fmtPct(t.v) }}</text>
-        </g>
         <!-- right axis: $ -->
         <g>
           <text
@@ -281,13 +266,12 @@ const fmtTs = (ts) => new Date(ts).toLocaleString();
           >{{ t.label }}</text>
         </g>
 
-        <!-- phase lines -->
-        <g fill="none" stroke-width="1" stroke-linejoin="round">
-          <path
-            v-for="ph in PLOT_PHASES" :key="ph"
-            :d="view.phaseLines[ph]"
-            :stroke="phaseColor(ph)"
-            stroke-opacity="0.85"
+        <!-- BTC phase ribbon -->
+        <g>
+          <rect
+            v-for="(s, i) in view.bandSegs" :key="'band'+i"
+            :x="s.x" :y="view.bandY" :width="s.w" :height="BAND_H"
+            :fill="phaseColor(s.phase)" fill-opacity="0.75"
           />
         </g>
 
@@ -305,33 +289,32 @@ const fmtTs = (ts) => new Date(ts).toLocaleString();
             <line x1="0" x2="12" y1="0" y2="0" stroke="var(--fg)" stroke-width="1.3" />
             <text x="18" y="3" fill="var(--muted)" font-size="9">price</text>
           </g>
-          <g v-for="(ph, i) in PLOT_PHASES" :key="ph" :transform="`translate(${70 + i * 90}, 0)`">
-            <line x1="0" x2="12" y1="0" y2="0" :stroke="phaseColor(ph)" stroke-width="1.1" />
-            <text x="18" y="3" fill="var(--muted)" font-size="9">{{ ph }}</text>
+          <g v-for="(ph, i) in PHASES" :key="ph" :transform="`translate(${70 + i * 88}, 0)`">
+            <rect x="0" y="-4" width="10" height="8" :fill="phaseColor(ph)" fill-opacity="0.75" />
+            <text x="16" y="3" fill="var(--muted)" font-size="9">{{ ph }}</text>
           </g>
-          <text :x="70 + PLOT_PHASES.length * 90" y="3" fill="var(--muted-2)" font-size="9">
-            ranging скрыт · шкала 0–{{ fmtPct(view.pctMax) }}
-          </text>
+          <text :x="70 + PHASES.length * 88" y="3" fill="var(--muted-2)" font-size="9">фаза BTC по часам</text>
         </g>
 
         <!-- crosshair -->
         <template v-if="cross">
           <line :x1="cross.x" :x2="cross.x" :y1="PAD_T" :y2="H - PAD_B" stroke="var(--muted)" stroke-width="0.5" stroke-dasharray="3,3" />
           <line :x1="PAD_L" :x2="W - PAD_R" :y1="cross.y" :y2="cross.y" stroke="var(--muted)" stroke-width="0.5" stroke-dasharray="3,3" />
-          <text :x="PAD_L - 6" :y="cross.y + 3" text-anchor="end" fill="var(--fg)" font-size="9">{{ fmtPct(cross.atPct) }}</text>
           <text :x="W - PAD_R + 6" :y="cross.y + 3" fill="var(--fg)" font-size="9">{{ fmtPrice(cross.atPrice) }}</text>
           <g :transform="`translate(${cross.x < W / 2 ? W - PAD_R - 180 : PAD_L + 8}, ${PAD_T + 6})`">
-            <rect x="0" y="0" width="178" height="92" fill="var(--panel)" stroke="var(--border-hi)" stroke-width="0.5" />
+            <rect x="0" y="0" width="178" height="68" fill="var(--panel)" stroke="var(--border-hi)" stroke-width="0.5" />
             <text x="6" y="12" fill="var(--muted)" font-size="9">{{ fmtTs(cross.nearest.ts) }}</text>
             <text x="6" y="26" fill="var(--fg)" font-size="11">
               price ${{ fmtPrice(cross.nearest.close) }}
               <tspan v-if="cross.nearest.real === false" fill="var(--muted-2)"> (sim)</tspan>
             </text>
-            <template v-if="cross.nph">
-              <text v-for="(ph, i) in PHASES" :key="ph"
-                :x="6" :y="42 + i * 10"
-                :fill="phaseColor(ph)" font-size="9"
-              >{{ ph }}: {{ fmtPct(cross.nph[ph] || 0) }}</text>
+            <template v-if="cross.nph && cross.nph.phase">
+              <text :x="6" :y="44" :fill="phaseColor(cross.nph.phase)" font-size="11">
+                {{ cross.nph.phase }}
+              </text>
+              <text :x="6" :y="58" fill="var(--muted)" font-size="9">
+                держалась {{ fmtPct(cross.nph.share) }} часа
+              </text>
             </template>
           </g>
         </template>

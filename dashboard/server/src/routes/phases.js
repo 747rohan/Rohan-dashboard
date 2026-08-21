@@ -158,6 +158,38 @@ router.get('/current', (req, res) => {
 
 router.get('/history', (req, res) => {
   try {
+    // `from` returns BTC's phase per hour — one entry per hour, the phase it
+    // spent most of that hour in. That is what the chart band draws, and it
+    // keeps ten days down to ~240 points instead of 14k rows.
+    if (req.query.from) {
+      const fromMs = Date.parse(req.query.from);
+      if (!Number.isFinite(fromMs)) return res.status(400).json({ error: 'bad from= param' });
+      const rows = orchDb()
+        .prepare(`SELECT ts, dominant_phase FROM phase_history WHERE ts >= ? ORDER BY id`)
+        .all(new Date(fromMs).toISOString());
+      const buckets = new Map(); // hourIso -> {phase -> count}
+      for (const r of rows) {
+        if (!r.dominant_phase) continue;
+        const hour = r.ts.slice(0, 13);
+        let b = buckets.get(hour);
+        if (!b) buckets.set(hour, (b = new Map()));
+        b.set(r.dominant_phase, (b.get(r.dominant_phase) || 0) + 1);
+      }
+      const points = [...buckets.entries()]
+        .map(([hour, counts]) => {
+          let phase = null;
+          let best = -1;
+          let total = 0;
+          for (const [p, n] of counts) {
+            total += n;
+            if (n > best) { best = n; phase = p; }
+          }
+          return { ts: Date.parse(`${hour}:00:00Z`), phase, share: best / total, n: total };
+        })
+        .sort((a, b) => a.ts - b.ts);
+      return res.json({ count: points.length, points });
+    }
+
     const limit = Math.min(Number(req.query.limit) || 500, 5000);
     const rows = orchDb()
       .prepare(
