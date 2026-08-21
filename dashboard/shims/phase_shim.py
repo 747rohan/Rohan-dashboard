@@ -347,15 +347,18 @@ def post_ingest(state, now_ms):
             continue
         occ = state.occupancy(symbol, now_ms) or {}
         g = state.gauge.get(symbol) or {}
-        # 7RL's own numbers where it publishes them, ours only as a fallback.
+        # 7RL's own number where it publishes one, ours only as a fallback —
+        # and no number at all when the phase on show came from a different
+        # source than the occupancy history, where a share of the hour would
+        # describe some other phase entirely.
         confidence = g.get("confidence")
         if confidence is None:
-            confidence = occ.get(phase, 0.0)
+            confidence = occ.get(phase) if state.current_phase(symbol) == phase else None
         entries.append(
             {
                 "instId": symbol.replace("/", "-"),
                 "phase": phase,
-                "confidence": round(float(confidence), 4),
+                "confidence": None if confidence is None else round(float(confidence), 4),
                 "vol_regime": g.get("vol_regime") or "normal",
                 # How long since this symbol last told us anything. 7RL stopped
                 # emitting per-symbol phase changes, so most of these only get

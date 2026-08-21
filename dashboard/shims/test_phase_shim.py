@@ -200,4 +200,13 @@ btc = [p for p in sent["body"]["phases"] if p["instId"] == "BTC-USDT"][0]
 assert abs(btc["confidence"] - 0.55) < 1e-6 and btc["vol_regime"] == "high", btc
 assert btc["age_s"] == 0, btc
 print("ingest BTC:", btc)
+
+# --- a phase taken from the log must not borrow another phase's occupancy
+sent.clear()
+st.btc_phase = "downtrend"          # log says one thing, counter history another
+assert st.current_phase("BTC/USDT") != "downtrend"
+S.post_ingest(st, now)
+btc = [p for p in sent["body"]["phases"] if p["instId"] == "BTC-USDT"][0]
+assert btc["phase"] == "downtrend" and btc["confidence"] is None, btc
+print("mismatched source -> confidence:", btc["confidence"])
 print("ALL TESTS PASSED")
