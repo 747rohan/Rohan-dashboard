@@ -311,10 +311,13 @@ def post_ingest(state, now_ms):
     entries = []
     for symbol in sorted(state.history):
         phase = state.current_phase(symbol)
+        hist = state.history.get(symbol) or []
+        age_ms = now_ms - hist[-1][0] if hist else None
         # BTC is stated outright in the trade log every tick, so prefer that
         # over anything reconstructed from the counters.
         if symbol == "BTC/USDT" and state.btc_phase:
             phase = state.btc_phase
+            age_ms = now_ms - state.btc_phase_ts if state.btc_phase_ts else 0
         if not phase:
             continue
         occ = state.occupancy(symbol, now_ms) or {}
@@ -324,6 +327,10 @@ def post_ingest(state, now_ms):
                 "phase": phase,
                 "confidence": round(occ.get(phase, 0.0), 4),
                 "vol_regime": "normal",
+                # How long since this symbol last told us anything. 7RL stopped
+                # emitting per-symbol phase changes, so most of these only get
+                # older — the grid has to show that rather than imply "now".
+                "age_s": None if age_ms is None else int(age_ms / 1000),
             }
         )
     if not entries:

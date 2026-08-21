@@ -23,21 +23,33 @@ const cells = computed(() => {
   for (const p of data.value?.phases || []) {
     byInst.set(instToSym(p.instId), p);
   }
-  return SYMBOL_ORDER.map((sym) => ({
-    symbol: sym,
-    short: sym.replace('USDT', ''),
-    p: byInst.get(sym) || null,
-  }));
+  return SYMBOL_ORDER.map((sym) => {
+    const p = byInst.get(sym) || null;
+    // 7RL no longer emits per-symbol phase changes, so most of these readings
+    // only get older. A cell that has not moved in hours is not "now" and must
+    // not be shown as if it were.
+    const ageS = p && Number.isFinite(p.age_s) ? p.age_s : null;
+    return {
+      symbol: sym,
+      short: sym.replace('USDT', ''),
+      p,
+      ageS,
+      stale: ageS != null && ageS > 6 * 3600,
+      ageLabel: ageS == null ? '' : ageS < 3600 ? `${Math.floor(ageS / 60)}м` : `${Math.floor(ageS / 3600)}ч`,
+    };
+  });
 });
 
 const counts = computed(() => {
   const acc = {};
   for (const c of cells.value) {
-    if (!c.p) continue;
+    if (!c.p || c.stale) continue;
     acc[c.p.phase] = (acc[c.p.phase] || 0) + 1;
   }
   return acc;
 });
+
+const staleCount = computed(() => cells.value.filter((c) => c.stale).length);
 
 const ageStr = computed(() => {
   const ms = data.value?.age_ms;
@@ -74,6 +86,7 @@ onUnmounted(() => { if (scrollTimer) clearInterval(scrollTimer); });
   <div class="widget a-phases">
     <h3>
       <span>phases · 22</span>
+      <span v-if="staleCount" class="stale-note">{{ staleCount }} без обновлений &gt;6ч</span>
     </h3>
     <div class="body">
       <div v-if="error" class="bad" style="font-size:10px">err: {{ error }}</div>
@@ -93,15 +106,16 @@ onUnmounted(() => { if (scrollTimer) clearInterval(scrollTimer); });
           <div
             v-for="c in cells" :key="c.symbol"
             class="cell"
-            :class="{ empty: !c.p }"
+            :class="{ empty: !c.p, stale: c.stale }"
             :style="c.p ? { borderLeftColor: phaseColor(c.p.phase) } : {}"
           >
             <div class="row1">
               <span class="sym">
-                <span v-if="c.p" class="pulse-dot" :style="{background: phaseColor(c.p.phase), color: phaseColor(c.p.phase)}" />
+                <span v-if="c.p && !c.stale" class="pulse-dot" :style="{background: phaseColor(c.p.phase), color: phaseColor(c.p.phase)}" />
+                <span v-else-if="c.p" class="dead-dot" :style="{background: phaseColor(c.p.phase)}" />
                 {{ c.short }}
               </span>
-              <span v-if="c.p" class="conf">{{ pct(c.p.confidence) }}</span>
+              <span v-if="c.p" class="conf" :class="{ old: c.stale }">{{ c.stale ? c.ageLabel : pct(c.p.confidence) }}</span>
             </div>
             <div class="row2" v-if="c.p">
               <span class="phase" :style="{color: phaseColor(c.p.phase)}">{{ c.p.phase }}</span>
@@ -145,6 +159,11 @@ onUnmounted(() => { if (scrollTimer) clearInterval(scrollTimer); });
   background: rgba(var(--ar), var(--ag), var(--ab), 0.04);
 }
 .cell.empty { opacity: 0.4; }
+/* A reading nobody has refreshed in hours must not look live. */
+.cell.stale { opacity: 0.42; border-left-style: dashed; }
+.dead-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; opacity: 0.5; }
+.conf.old { color: var(--bad); }
+.stale-note { color: var(--bad); font-size: 9px; letter-spacing: 0; margin-left: 8px; }
 .row1 { display: flex; justify-content: space-between; }
 .row2 { display: flex; justify-content: space-between; color: var(--muted); font-size: 9px; }
 .sym { color: var(--fg); letter-spacing: 1px; display: inline-flex; align-items: center; gap: 5px; }
