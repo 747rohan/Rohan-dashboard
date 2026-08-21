@@ -189,11 +189,13 @@ router.get('/phase-detector', (req, res) => {
     // Get phase_probs from ~60 min ago for delta calculation
     let prevPhase = null;
     try {
+      // Compare against BTC an hour ago, not against the market-wide mix that
+      // phase_history carries for the chart overlay.
       const cutoff = new Date(Date.now() - 65 * 60_000).toISOString();
       const prev = orchDb()
-        .prepare(`SELECT phase_probs FROM phase_history WHERE ts <= ? ORDER BY id DESC LIMIT 1`)
+        .prepare(`SELECT phase_current FROM decisions WHERE ts <= ? ORDER BY id DESC LIMIT 1`)
         .get(cutoff);
-      if (prev?.phase_probs) prevPhase = safeParse(prev.phase_probs);
+      if (prev?.phase_current) prevPhase = safeParse(prev.phase_current);
     } catch {}
 
     res.json({

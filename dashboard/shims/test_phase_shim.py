@@ -2,10 +2,10 @@
 
 No server, no 7RL and no network — synthetic metrics lines go straight into the
 parser and the database is a throwaway file in a temp dir. Covers the traps that
-make this shim subtle: adopting a counter on first sight without inventing a
-transition, ignoring a counter reset after 7RL restarts, dropping replayed lines
-from a rotated file, and building phase_probs from the market cross-section
-rather than from a single symbol.
+make this shim subtle: treating the opening snapshot as lifetime totals rather
+than news, still reacting when 7RL restarts and its counters fall back to one,
+dropping replayed lines from a rotated file, keeping the chart overlay a
+market-wide distribution, and reading BTC's own phase from the trade log.
 """
 
 import json, os, sqlite3, sys, tempfile
@@ -36,25 +36,36 @@ for l in st_lines: S.handle_line(st, l)
 assert st.current_phase("BTC/USDT") == "ranging", st.current_phase("BTC/USDT")
 assert len(st.history["BTC/USDT"]) == 1
 
-# --- flush 2 (+30 min): BTC counter increments -> real transition
-S.handle_line(st, line(T0 + 1800_000, "BTC/USDT", "ranging", "uptrend", 1.0))   # new key, phase already known -> no move
-assert st.current_phase("BTC/USDT") == "ranging"
-S.handle_line(st, line(T0 + 1800_000, "BTC/USDT", "ranging", "uptrend", 2.0))   # increment -> move
+assert not st.bootstrapped, "opening snapshot is still lifetime totals"
+
+# --- flush 2 (+30 min): past the opening snapshot, a key appearing for the
+# first time is a transition that just happened, not a baseline to adopt.
+# 7RL restarts every few hours and its counters restart at 1 with it, so
+# waiting for a second increment strands the symbol until the triple repeats.
+S.handle_line(st, line(T0 + 1800_000, "BTC/USDT", "ranging", "uptrend", 1.0))
+assert st.bootstrapped
 assert st.current_phase("BTC/USDT") == "uptrend", st.current_phase("BTC/USDT")
+
+# --- the same snapshot republished every 15s must not move anything
+before = len(st.history["BTC/USDT"])
+S.handle_line(st, line(T0 + 1815_000, "BTC/USDT", "ranging", "uptrend", 1.0))
+assert len(st.history["BTC/USDT"]) == before
 
 # --- older line from a rotated file must be ignored
 S.handle_line(st, line(T0 - 600_000, "BTC/USDT", "uptrend", "downtrend", 99.0))
 assert st.current_phase("BTC/USDT") == "uptrend"
 
-# --- counter reset (7RL restart) must not invent a transition
-S.handle_line(st, line(T0 + 2400_000, "BTC/USDT", "ranging", "uptrend", 1.0))
-assert st.current_phase("BTC/USDT") == "uptrend"
+# --- counter going backwards = 7RL restarted, and the transition is real
+S.handle_line(st, line(T0 + 2400_000, "BTC/USDT", "uptrend", "creep_down", 1.0))
+assert st.current_phase("BTC/USDT") == "creep_down", st.current_phase("BTC/USDT")
 
-# --- occupancy over the trailing hour: 30 min ranging + 30 min uptrend
+# --- occupancy over the trailing hour: 30 min ranging, 10 uptrend, 20 creep_down
 now = T0 + 3600_000
 occ = st.occupancy("BTC/USDT", now)
 assert abs(sum(occ.values()) - 1.0) < 1e-9, occ
-assert abs(occ["ranging"] - 0.5) < 0.02 and abs(occ["uptrend"] - 0.5) < 0.02, occ
+assert abs(occ["ranging"] - 0.5) < 0.02, occ
+assert abs(occ["uptrend"] - 1 / 6) < 0.02, occ
+assert abs(occ["creep_down"] - 1 / 3) < 0.02, occ
 print("occupancy:", {k: round(v, 3) for k, v in occ.items()})
 
 # --- market cross-section drives phase_probs, not a single symbol
@@ -116,4 +127,35 @@ for p in body["phases"]:
     assert re.match(r"^([A-Z0-9]+)-USDT", p["instId"]), p
     assert p["phase"] in S.PHASES
 print("ingest:", body["source"], [p["instId"] for p in body["phases"]])
+
+# --- BTC's phase comes from the trade log, immune to counter resets
+pb = os.path.join(TMP, "pb.log")
+os.environ["SHIM_PB_LOG"] = pb
+S.PB_LOG = pb
+with open(pb, "w", encoding="utf-8") as fh:
+    fh.write("2026-08-21 12:00:00,000 INFO     src.services.system_loop: loop_heartbeat tick_id=90 running=True\n")
+    fh.write("2026-08-21 12:00:01,000 INFO     src.services.account_manager: dry_run_no_decisions account=okx-lid001 tick=90 balance=99.78 phase=uptrend\n")
+    fh.write("2026-08-21 12:00:02,000 INFO     src.services.account_manager: live_no_decisions account=okx-anton-copytest tick=90 balance=301.6 phase=uptrend open_positions=0\n")
+S.refresh_btc_phase(st, now)
+assert st.btc_phase == "uptrend", st.btc_phase
+
+# the detector row must describe BTC, not the market mix
+conn2 = S.open_db()
+assert S.write_db_rows(conn2, st, now) is True
+d = conn2.execute("SELECT dominant_phase, phase_current FROM decisions ORDER BY id DESC LIMIT 1").fetchone()
+assert d[0] == "uptrend", d[0]
+cur = json.loads(d[1])
+assert cur["uptrend"] == 1.0 and sum(cur.values()) == 1.0, cur
+# ...while the chart series keeps the market-wide mix
+h = conn2.execute("SELECT dominant_phase, phase_probs FROM phase_history ORDER BY id DESC LIMIT 1").fetchone()
+assert h[0] == "uptrend"
+assert sum(1 for v in json.loads(h[1]).values() if v > 0) >= 2, "overlay stays a distribution"
+conn2.close()
+
+# a garbled log line must not crash or wipe a known phase
+with open(pb, "a", encoding="utf-8") as fh:
+    fh.write("not a log line at all\n")
+S.refresh_btc_phase(st, now)
+assert st.btc_phase == "uptrend"
+print("BTC phase from log:", st.btc_phase)
 print("ALL TESTS PASSED")

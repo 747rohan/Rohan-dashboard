@@ -9,11 +9,15 @@ the increments of that counter reconstructs the live phase of every symbol.
 From that this shim maintains two things the dashboard already knows how to read:
 
   * `orchestrator.db` — `phase_history` and `decisions` rows in the original
-    Solbot schema. `phase_probs` is the share of instruments in each phase,
-    `dominant_phase` is the phase most of them are in and `confidence` is its
-    share. A single symbol would only ever be one-hot here, because 7RL reports
-    one hard phase per symbol rather than a distribution. Predictions come from
-    a Markov matrix estimated from 5-minute samples of all 22 symbols.
+    Solbot schema. `phase_history.phase_probs` is the share of instruments in
+    each phase, which is what makes the chart overlay readable; `decisions`
+    describes BTC alone, since the detector sits on a BTC chart. Predictions
+    come from a Markov matrix estimated from 5-minute samples of all 22 symbols.
+
+    BTC's own phase does NOT come from the counters. 7RL restarts every few
+    hours, its counters restart with it, and no amount of delta bookkeeping
+    survives that reliably — it froze symbols for a week. Instead it is read
+    from the trade log, which restates the phase on every tick.
   * `POST /api/phases/ingest` — the current phase of every symbol, for the
     PhasesByInstrument grid.
 
@@ -23,6 +27,7 @@ anything under /home/rohan.
 
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -42,7 +47,14 @@ STATE_PATH = os.environ.get("SHIM_STATE_PATH", "/opt/dashboard/shim/phase_state.
 INGEST_URL = os.environ.get("SHIM_INGEST_URL", "http://localhost/api/phases/ingest")
 INGEST_KEY = os.environ.get("PHASES_INGEST_KEY", "")
 
+PB_LOG = os.environ.get("SHIM_PB_LOG", "/opt/dashboard/pb.log")
+
 PHASES = ["uptrend", "downtrend", "ranging", "creep_up", "creep_down"]
+
+# Every tick the trade system logs the phase it is acting on, and
+# system_loop.py takes that from `global_state.phases["BTC/USDT"]` — so this is
+# BTC's phase as 7RL itself sees it, restated once a minute.
+BTC_PHASE_LINE = re.compile(r"_decisions?\b.*?\bphase=([a-z_]+)")
 PHASE_IDX = {p: i for i, p in enumerate(PHASES)}
 
 OCCUPANCY_WINDOW_MS = 3600_000  # trailing hour behind per-symbol confidence
@@ -85,6 +97,10 @@ class PhaseState:
         self.matrix = [[0] * 5 for _ in range(5)]  # transition counts, 5-min steps
         self.last_sample = {}  # symbol -> phase at the previous markov sample
         self.last_ts = 0  # newest metrics ts already applied
+        self.first_ts = None  # ts of the first snapshot of this run
+        self.bootstrapped = False  # past the opening snapshot of lifetime totals
+        self.btc_phase = None  # BTC's own phase, straight from the trade log
+        self.btc_phase_ts = 0
 
     # ---- persistence -----------------------------------------------------
     def load(self):
@@ -101,6 +117,9 @@ class PhaseState:
             self.matrix = matrix
         self.last_sample = raw.get("last_sample", {})
         self.last_ts = raw.get("last_ts", 0)
+        # Restored counters already are the baseline, so the next line we read
+        # carries news rather than lifetime totals.
+        self.bootstrapped = bool(self.counters)
         log(f"state restored: {len(self.counters)} counters, {len(self.history)} symbols")
 
     def save(self):
@@ -247,11 +266,17 @@ def write_db_rows(conn, state, now_ms):
     probs = state.market_probs()
     if not probs:
         return False
-    dominant = max(PHASES, key=lambda p: probs[p])
+    # The detector sits on a BTC chart, so it reports BTC. Its phase comes
+    # straight from the trade log rather than the counters — 7RL restarts every
+    # few hours and the counters restart with it, while the log states BTC's
+    # phase outright on every tick.
+    dominant = state.btc_phase or max(PHASES, key=lambda p: probs[p])
+    btc_probs = {p: (1.0 if p == dominant else 0.0) for p in PHASES}
     ts = iso_utc(now_ms)
+    # How much of the market agrees with BTC right now.
     confidence = probs[dominant]
     mat = state.transition_matrix()
-    preds = {h: predict(probs, mat, k) for h, k in HORIZON_STEPS.items()}
+    preds = {h: predict(btc_probs, mat, k) for h, k in HORIZON_STEPS.items()}
     probs_json = json.dumps(probs)
     conn.execute(
         "INSERT INTO phase_history (ts, dominant_phase, phase_probs, signals, confidence)"
@@ -265,7 +290,7 @@ def write_db_rows(conn, state, now_ms):
         (
             ts,
             dominant,
-            probs_json,
+            json.dumps(btc_probs),
             json.dumps(preds["1h"]),
             json.dumps(preds["4h"]),
             json.dumps(preds["24h"]),
@@ -286,6 +311,10 @@ def post_ingest(state, now_ms):
     entries = []
     for symbol in sorted(state.history):
         phase = state.current_phase(symbol)
+        # BTC is stated outright in the trade log every tick, so prefer that
+        # over anything reconstructed from the counters.
+        if symbol == "BTC/USDT" and state.btc_phase:
+            phase = state.btc_phase
         if not phase:
             continue
         occ = state.occupancy(symbol, now_ms) or {}
@@ -347,6 +376,13 @@ def handle_line(state, line):
         return
     state.last_ts = ts_ms
 
+    # The opening snapshot of a cold start is lifetime totals; once a later
+    # flush arrives we are reading news.
+    if state.first_ts is None:
+        state.first_ts = ts_ms
+    elif not state.bootstrapped and ts_ms - state.first_ts > 2_000:
+        state.bootstrapped = True
+
     key = f"{symbol}|{from_phase}|{to_phase}"
     value = rec.get("value")
     try:
@@ -355,16 +391,46 @@ def handle_line(state, line):
         return
     prev = state.counters.get(key)
     state.counters[key] = value
-    if prev is None:
-        # First sighting: adopt the counter without inventing a transition,
-        # but let the symbol's phase settle on whatever it last moved to.
+    if not state.bootstrapped:
+        # The very first snapshot carries lifetime totals, not news. Adopt the
+        # counters, and let each symbol settle on whatever it last moved to.
         if not state.current_phase(symbol):
             state.apply_transition(symbol, to_phase, ts_ms)
         return
-    if value <= prev:
-        # 7RL restarted and its counters went back to zero — just re-baseline.
+    if value == prev:
+        # The exporter republishes the same snapshot every 15s.
         return
+    # Anything else is a transition that just happened. A counter that went
+    # *down*, or a key appearing out of nowhere, means 7RL restarted and began
+    # counting again from zero — it restarts every few hours, and treating that
+    # as "re-baseline and drop" silently swallowed almost every transition,
+    # freezing symbols for days.
     state.apply_transition(symbol, to_phase, ts_ms)
+
+
+def refresh_btc_phase(state, now_ms):
+    """Read BTC's current phase from the tail of pb.log.
+
+    Independent of the counter stream, so a 7RL restart cannot stale it: the
+    log restates the phase every tick.
+    """
+    try:
+        with open(PB_LOG, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 65536))
+            chunk = fh.read().decode("utf-8", "replace")
+    except OSError as e:
+        log(f"pb.log read failed: {e}")
+        return
+    for line in reversed(chunk.splitlines()):
+        m = BTC_PHASE_LINE.search(line)
+        if m and m.group(1) in PHASE_IDX:
+            if m.group(1) != state.btc_phase:
+                log(f"BTC phase from trade log: {state.btc_phase} -> {m.group(1)}")
+            state.btc_phase = m.group(1)
+            state.btc_phase_ts = now_ms
+            return
 
 
 def bootstrap_rotations(state):
@@ -405,11 +471,15 @@ def tail_metrics():
 
 def periodic_worker(state):
     conn = None
-    next_ingest = next_db = next_sample = next_persist = 0.0
+    next_ingest = next_db = next_sample = next_persist = next_btc = 0.0
     while not _stop.is_set():
         now = time.monotonic()
         now_ms = int(time.time() * 1000)
         try:
+            if now >= next_btc:
+                with _lock:
+                    refresh_btc_phase(state, now_ms)
+                next_btc = now + INGEST_EVERY
             if now >= next_sample:
                 with _lock:
                     state.sample_markov()
