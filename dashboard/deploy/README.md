@@ -9,6 +9,8 @@ These files are **not** applied automatically by anything; copy them by hand.
 | `systemd-units.txt` | `/etc/systemd/system/dash-*.{service,timer}` — split on the `=====` headers |
 | `wm-warm.sh` | `/opt/dashboard/worldmonitor/warm.sh` (chmod +x) |
 | `worldmonitor-compose.yml` | `/opt/dashboard/worldmonitor/docker-compose.yml` |
+| `backup/backup.sh` | `/opt/dashboard/backup.sh` (chmod +x) |
+| `backup/pull-backup.ps1` | stays here — runs on the Windows box |
 
 ## Secrets kept out of the repo
 
@@ -40,6 +42,50 @@ docker run -d --name dashboard --restart unless-stopped \
 container after touching `dashboard.env`. Mount `/data/orch` as a directory and
 without `:ro` — the shim writes SQLite in WAL mode and readers need the
 `-shm`/`-wal` files.
+
+## Backups
+
+`orchestrator.db` holds the phase history since 2026-04-01 and exists in no
+other place; the old Rohan host was deleted before its data was copied off, and
+that is not a mistake worth repeating. `backup.sh` snapshots everything under
+`/opt/dashboard` that the repo cannot rebuild — the database (through SQLite's
+online backup API, so the writing shim is undisturbed), `pb.log`, `data-okx/`,
+`architecture.json` and both env files — into `/opt/dashboard/backups/`, keeping
+the five newest. It takes about six seconds and produces roughly 24 MB.
+
+`dash-backup.timer` runs it daily at 03:17 UTC. To take one by hand:
+
+```sh
+sudo systemctl start dash-backup.service   # or: /opt/dashboard/backup.sh
+```
+
+Those archives sit on the same instance as the data they protect, so they are a
+rollback, not a backup. The copy that survives losing the instance is pulled by
+`backup/pull-backup.ps1` from the Windows box:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File dashboard\deploy\backup\pull-backup.ps1
+# -Fresh  snapshot on the server first, then pull
+# -Dest   where to keep them (default %USERPROFILE%\DashboardBackups, keeps 14)
+```
+
+It resolves the `latest.tar.gz` symlink server-side, skips a file it already
+has, and deletes any copy that will not unpack. Register it to run daily:
+
+```powershell
+schtasks /create /tn "Dashboard backup pull" /sc daily /st 09:00 /f ^
+  /tr "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%USERPROFILE%\Documents\Claude\Projects\Dashboard\dashboard\deploy\backup\pull-backup.ps1\""
+```
+
+**The archive contains secrets** (both env files) — it is written `chmod 600`
+inside a `chmod 700` directory, travels over SSH, and must never be committed
+or handed to anyone outside the team.
+
+To restore: unpack somewhere, put `orchestrator.db` in `/opt/dashboard/data-orch/`
+(no `-wal`/`-shm` files — the snapshot already folded them in), restore the other
+files to the paths in the table above, and start the container as described in
+this README. `MANIFEST.txt` records what was running and how much history the
+snapshot carried.
 
 ## Why the warm timer exists
 

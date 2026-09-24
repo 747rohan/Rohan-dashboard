@@ -50,3 +50,29 @@ AccuracySec=15s
 
 [Install]
 WantedBy=timers.target
+===== dash-backup.service
+[Unit]
+Description=Snapshot /opt/dashboard (phase history, pb.log, OKX data, secrets)
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/opt/dashboard/backup.sh
+Nice=19
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
+===== dash-backup.timer
+[Unit]
+Description=Daily /opt/dashboard snapshot
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+Persistent=true
+AccuracySec=5min
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
