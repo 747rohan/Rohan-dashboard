@@ -34,6 +34,9 @@ export class OkxClient {
           'OK-ACCESS-TIMESTAMP': ts,
           'OK-ACCESS-PASSPHRASE': this.passphrase,
           'Content-Type': 'application/json',
+          // OKX's edge answers a bare library user agent with a 403 before
+          // the request reaches the API (seen with Python's urllib).
+          'User-Agent': 'rohan-dashboard/1.0',
         },
       });
       clearTimeout(to);
@@ -54,6 +57,17 @@ export class OkxClient {
       limit,
       begin: beginMs,
       end: endMs,
+      after,
+    });
+  }
+  // Transfers in and out of the trading account, newest first; `after` is a
+  // billId and pages towards older records. The archive covers three months.
+  transferBills({ beginMs, after, limit = 100 } = {}) {
+    return this.get('/api/v5/account/bills-archive', {
+      ccy: 'USDT',
+      type: 1,
+      limit,
+      begin: beginMs,
       after,
     });
   }

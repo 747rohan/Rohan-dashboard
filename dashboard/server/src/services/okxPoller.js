@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
 import { OkxClient } from '../lib/okx.js';
+import { readFlows } from '../lib/flows.js';
 
 const INITIAL_EQUITY = 100.0;
 const INITIAL_TS = Date.parse(config.okx.startIso);
@@ -32,6 +33,7 @@ function readJsonl(file) {
 
 const state = {
   closedById: new Map(),
+  flowIds: null,
   lastUTime: 0,
   lastError: null,
   lastSnapshotAt: 0,
@@ -58,7 +60,8 @@ async function readEquity() {
     if (!row) return null;
     const usdt = (row.details || []).find((d) => d.ccy === 'USDT');
     const equity = Number(usdt?.eq);
-    return Number.isFinite(equity) ? equity : null;
+    const upl = Number(usdt?.upl) || 0;
+    return Number.isFinite(equity) ? { equity, upl } : null;
   } catch (e) {
     state.lastError = e.message;
     console.warn('[okx] readEquity failed:', e.message);
@@ -166,24 +169,81 @@ async function backfillClosed() {
   }
 }
 
+async function syncFlows() {
+  const c = client();
+  if (!c) return;
+  try {
+    if (state.flowIds === null) {
+      state.flowIds = new Set(readFlows().map((f) => f.billId));
+    }
+    let after = null;
+    let added = 0;
+    for (let page = 0; page < 10; page++) {
+      const data = await c.transferBills({ beginMs: INITIAL_TS, after });
+      if (!data || data.length === 0) break;
+      for (const b of data) {
+        if (state.flowIds.has(b.billId)) continue;
+        const ts = Number(b.ts);
+        const amount = Number(b.balChg);
+        if (!Number.isFinite(ts) || ts < INITIAL_TS || !Number.isFinite(amount) || amount === 0) continue;
+        state.flowIds.add(b.billId);
+        appendJsonl(config.okx.flowsPath, { ts_ms: ts, amount, billId: b.billId, subType: b.subType });
+        added++;
+      }
+      if (data.length < 100) break;
+      after = data[data.length - 1].billId;
+    }
+    if (added > 0) console.log(`[okx] +${added} transfers in/out of the account`);
+  } catch (e) {
+    state.lastError = e.message;
+    console.warn('[okx] syncFlows failed:', e.message);
+  }
+}
+
+// Balance at startIso, rebuilt from today's: what the account holds now, less
+// open positions' unrealised PnL, less every closed trade and every transfer
+// since. Exact as long as nothing was open across startIso — the account's
+// bills show no activity between the last pre-start transfer and the first
+// trade, so for AntonCopyTest (2026-08-17) it is.
+function seedHistory(now) {
+  const closed = [...state.closedById.values()]
+    .filter((p) => Number.isFinite(p.uTime))
+    .map((p) => ({ ts_ms: p.uTime, d: Number.isFinite(p.net) ? p.net : p.pnl }));
+  const flows = readFlows().map((f) => ({ ts_ms: f.ts_ms, d: f.amount }));
+  const events = closed.concat(flows).sort((a, b) => a.ts_ms - b.ts_ms);
+  const seed = now.equity - now.upl - events.reduce((s, e) => s + e.d, 0);
+
+  appendJsonl(config.okx.equityHistoryPath, { ts_ms: INITIAL_TS, equity: seed, source: 'inception' });
+  // Realised steps from the start up to now, so the chart has a past rather
+  // than a straight line from the seed to the first live snapshot.
+  let eq = seed;
+  for (const e of events) {
+    eq += e.d;
+    appendJsonl(config.okx.equityHistoryPath, { ts_ms: e.ts_ms, equity: eq, source: 'backfill' });
+  }
+  console.log(`[okx] seeded $${seed.toFixed(2)} at ${config.okx.startIso}, backfilled ${events.length} steps ` +
+              `(${closed.length} trades, ${flows.length} transfers)`);
+}
+
 export async function okxInit() {
   if (!config.okx.apiKey) {
     console.log('[okx] disabled (no credentials)');
     return;
   }
   ensureDir(path.dirname(config.okx.equityHistoryPath));
-  if (!fs.existsSync(config.okx.equityHistoryPath)) {
-    // Seed the baseline from what the account actually holds — a fixed $100
-    // would show a phantom gain or loss from the very first snapshot.
-    const equity = (await readEquity()) ?? INITIAL_EQUITY;
-    appendJsonl(config.okx.equityHistoryPath, {
-      ts_ms: INITIAL_TS,
-      equity,
-      source: 'inception',
-    });
-    console.log(`[okx] seeded inception point $${equity} at ${config.okx.startIso}`);
-  }
+  // Trades and transfers first: the seed is reconstructed from them.
   await backfillClosed();
+  await syncFlows();
+  if (!fs.existsSync(config.okx.equityHistoryPath)) {
+    const now = await readEquity();
+    if (now) {
+      seedHistory(now);
+    } else {
+      // No balance to rebuild from; a fixed seed is wrong but visibly so.
+      appendJsonl(config.okx.equityHistoryPath, { ts_ms: INITIAL_TS, equity: INITIAL_EQUITY, source: 'inception' });
+      console.warn(`[okx] balance unavailable — seeded a placeholder $${INITIAL_EQUITY}`);
+    }
+  }
   await snapshotEquity();
 
   // Use setTimeout chains instead of setInterval to prevent overlap
@@ -199,7 +259,14 @@ export async function okxInit() {
       scheduleClosed();
     }, 60_000);
   }
+  function scheduleFlows() {
+    setTimeout(async () => {
+      await syncFlows();
+      scheduleFlows();
+    }, 300_000);
+  }
   scheduleEquity();
   scheduleClosed();
-  console.log('[okx] poller started (equity 60s, closed-positions 60s, non-overlapping)');
+  scheduleFlows();
+  console.log('[okx] poller started (equity 60s, closed-positions 60s, transfers 5m, non-overlapping)');
 }

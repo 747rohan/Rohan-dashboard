@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { config } from '../config.js';
 import { okxState } from '../services/okxPoller.js';
 import { tailLines } from '../lib/tail.js';
+import { readFlows, flowsBetween } from '../lib/flows.js';
 
 const router = Router();
 
@@ -98,32 +99,54 @@ router.get('/metrics', (req, res) => {
     // Falls back to hardcoded $100 only if no history exists.
     const seedEquity = Number.isFinite(snapshots[0]?.equity) ? snapshots[0].equity : INITIAL_EQUITY;
     const seedTs     = Number.isFinite(snapshots[0]?.ts_ms)  ? snapshots[0].ts_ms  : INITIAL_TS;
+    // Transfers are steps on the synthetic curve too, so it tracks the real
+    // balance and merges cleanly with live snapshots.
+    const flows = readFlows().filter((f) => f.ts_ms > seedTs);
     const synth = [{ ts_ms: seedTs, equity: seedEquity, source: 'inception' }];
+    const steps = closed
+      .map((p) => ({ ts_ms: p.uTime, d: Number.isFinite(p.net) ? p.net : p.pnl }))
+      .concat(flows.map((f) => ({ ts_ms: f.ts_ms, d: f.amount })))
+      .sort((a, b) => a.ts_ms - b.ts_ms);
     let eq = seedEquity;
-    for (const p of closed) {
-      eq += Number.isFinite(p.net) ? p.net : p.pnl;
-      synth.push({ ts_ms: p.uTime, equity: eq, source: 'synth' });
+    for (const s of steps) {
+      eq += s.d;
+      synth.push({ ts_ms: s.ts_ms, equity: eq, source: 'synth' });
     }
     // merge with real snapshots (live equity includes unrealized)
     const curve = synth.concat(snapshots.filter((s) => s.source === 'okx'))
       .sort((a, b) => a.ts_ms - b.ts_ms);
 
+    // Time-weighted index: every step's return with that step's transfer
+    // taken out. Drawdown and Sharpe run on it, so a deposit is neither a
+    // gain nor a change of the base a later loss is measured against.
+    const index = [];
+    let idx = 1;
+    for (let i = 0; i < curve.length; i++) {
+      if (i > 0) {
+        const prev = curve[i - 1].equity;
+        const flow = flowsBetween(flows, curve[i - 1].ts_ms, curve[i].ts_ms);
+        const r = prev > 0 ? (curve[i].equity - prev - flow) / prev : 0;
+        if (Number.isFinite(r)) idx *= 1 + r;
+      }
+      index.push({ ts_ms: curve[i].ts_ms, v: idx });
+    }
+
     // Max DD (from peak down)
     let maxDD = 0;
-    let peak = curve[0]?.equity ?? seedEquity;
-    for (const p of curve) {
-      if (p.equity > peak) peak = p.equity;
-      const dd = peak > 0 ? (peak - p.equity) / peak : 0;
+    let peak = index[0]?.v ?? 1;
+    for (const p of index) {
+      if (p.v > peak) peak = p.v;
+      const dd = peak > 0 ? (peak - p.v) / peak : 0;
       if (dd > maxDD) maxDD = dd;
     }
 
     // Sharpe (daily returns, annualized √365)
     let sharpe = null;
-    if (curve.length >= 3) {
+    if (index.length >= 3) {
       const daily = new Map();
-      for (const p of curve) {
+      for (const p of index) {
         const day = Math.floor(p.ts_ms / 86_400_000);
-        daily.set(day, p.equity);
+        daily.set(day, p.v);
       }
       const eqs = [...daily.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
       if (eqs.length >= 3) {

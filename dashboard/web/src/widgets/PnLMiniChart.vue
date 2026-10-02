@@ -33,7 +33,11 @@ const view = computed(() => {
     pts.map((p) => `L${x(p.ts).toFixed(1)},${y(p.equity).toFixed(1)}`).join(' ') +
     ` L${x(pts[pts.length - 1].ts).toFixed(1)},${(H - PAD_B).toFixed(1)} Z`;
 
-  return { path, areaPath, firstY: y(first), lastPt: pts[pts.length - 1], lastX: x(pts[pts.length - 1].ts), lastY: y(pts[pts.length - 1].equity) };
+  // The series already has transfers taken out; mark where they happened so a
+  // flat stretch next to a big balance change is not a mystery.
+  const flowXs = (data.value?.flows || []).map((f) => ({ x: x(f.ts), amount: f.amount }));
+
+  return { path, areaPath, flowXs, firstY: y(first), lastPt: pts[pts.length - 1], lastX: x(pts[pts.length - 1].ts), lastY: y(pts[pts.length - 1].equity) };
 });
 
 const pnlCls = computed(() => {
@@ -77,6 +81,10 @@ const fmtPct = (v) => {
           <span>{{ data.first_equity != null ? '$' + data.first_equity.toFixed(2) : '—' }}</span>
           <span style="color:var(--muted-2)">→</span>
           <span>{{ data.last_equity != null ? '$' + data.last_equity.toFixed(2) : '—' }}</span>
+          <span v-if="data.flows_usd" class="flow-note"
+                :title="'переводы на счёт и со счёта за период — в PnL не входят'">
+            · {{ data.flows_usd > 0 ? 'ввод' : 'вывод' }} {{ fmtUsd(data.flows_usd) }}
+          </span>
         </div>
         <svg v-if="view" :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" style="width:100%;flex:1;min-height:50px">
           <defs>
@@ -87,6 +95,11 @@ const fmtPct = (v) => {
           </defs>
           <line :x1="PAD_L" :x2="W - PAD_R" :y1="view.firstY" :y2="view.firstY"
                 stroke="var(--border-hi)" stroke-width="0.5" stroke-dasharray="2,2" />
+          <line v-for="(f, i) in view.flowXs" :key="'f' + i"
+                :x1="f.x" :x2="f.x" :y1="PAD_T" :y2="H - PAD_B"
+                stroke="var(--accent-40)" stroke-width="0.6" stroke-dasharray="1,2">
+            <title>{{ (f.amount > 0 ? 'ввод ' : 'вывод ') + fmtUsd(f.amount) }}</title>
+          </line>
           <path :d="view.areaPath" fill="url(#pnl-area)" />
           <path :d="view.path" fill="none" stroke="var(--accent)" stroke-width="1.2" />
           <circle :cx="view.lastX" :cy="view.lastY" r="2" fill="var(--accent)" />
@@ -122,4 +135,5 @@ const fmtPct = (v) => {
 .usd.bad { text-shadow: 0 0 8px rgba(184, 143, 143, 0.4); }
 .sub { font-size: 10px; color: var(--muted); margin-bottom: 4px; flex: none; }
 .sub .n { color: var(--muted-2); margin-left: 4px; }
+.flow-note { color: var(--muted-2); margin-left: 4px; cursor: help; }
 </style>

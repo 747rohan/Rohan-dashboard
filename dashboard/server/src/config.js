@@ -33,6 +33,16 @@ export const config = {
     passphrase: process.env.OKX_PASSPHRASE || '',
     equityHistoryPath:   process.env.OKX_EQUITY_HISTORY   || '/data/okx/equity_history.jsonl',
     closedPositionsPath: process.env.OKX_CLOSED_POSITIONS || '/data/okx/closed_positions.jsonl',
+    // Transfers in and out of the trading account. Kept apart from trades so a
+    // deposit never reads as profit.
+    flowsPath:           process.env.OKX_FLOWS            || '/data/okx/flows.jsonl',
     startIso:            process.env.OKX_START_ISO        || '2026-04-15T07:00:00Z',
+  },
+  gex: {
+    // Written once a minute by the gex_server collector on the same host. The
+    // directory is mounted, not the file: the collector may replace it, and a
+    // single-file bind mount would keep serving the old inode.
+    zonesPath: process.env.GEX_ZONES_PATH || '/data/gex/gex_zones.json',
+    staleSec:  Number(process.env.GEX_STALE_SEC) || 900,
   },
 };
