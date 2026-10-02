@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
 import { usePolling } from '../composables/usePolling.js';
+import { useBtcTick } from '../composables/useBtcTick.js';
 
 const WINDOW_DAYS = 10;
 const fromIso = () => new Date(Date.now() - WINDOW_DAYS * 86400_000).toISOString();
@@ -11,7 +12,7 @@ const priceUrl = computed(() => `/api/btc/price?tf=1h&from=${fromIso()}`);
 const phaseUrl = computed(() => `/api/phases/history?from=${fromIso()}`);
 const { data: priceData, error: priceErr } = usePolling(priceUrl, 30_000);
 const { data: phaseData } = usePolling(phaseUrl, 30_000);
-const { data: tickData } = usePolling('/api/btc/tick', 1_000);
+const { tick: tickData } = useBtcTick(); // shared with the GEX widget
 
 const priceFlash = ref(''); // 'up' | 'down' | ''
 const lastLivePrice = ref(null);
