@@ -4,7 +4,7 @@ import BtcPhaseChart from './widgets/BtcPhaseChart.vue';
 import BtcPhaseDetector from './widgets/BtcPhaseDetector.vue';
 import PnLMiniChart from './widgets/PnLMiniChart.vue';
 import TradingMetrics from './widgets/TradingMetrics.vue';
-import PhasesByInstrument from './widgets/PhasesByInstrument.vue';
+import GexZones from './widgets/GexZones.vue';
 import ArchitectureGraph from './widgets/ArchitectureGraph.vue';
 import WmFeed from './widgets/WmFeed.vue';
 import WmNews from './widgets/WmNews.vue';
@@ -20,6 +20,6 @@ import WmNews from './widgets/WmNews.vue';
     <WmFeed />
     <WmNews />
     <ArchitectureGraph />
-    <PhasesByInstrument />
+    <GexZones />
   </main>
 </template>

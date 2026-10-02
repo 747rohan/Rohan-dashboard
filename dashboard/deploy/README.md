@@ -15,7 +15,8 @@ These files are **not** applied automatically by anything; copy them by hand.
 ## Secrets kept out of the repo
 
 - `/opt/dashboard/dashboard.env` (chmod 600) — basic auth, `PHASES_INGEST_KEY`,
-  OKX Testi07 credentials. The units read it through `EnvironmentFile=`.
+  OKX read-only credentials (AntonCopyTest since 2026-10-02, history from
+  2026-08-17). The units read it through `EnvironmentFile=`.
 - `/opt/dashboard/worldmonitor/.env` (chmod 600) — Finnhub and FRED API keys.
 - `SRH_TOKEN` in the compose file is a placeholder. Any value works as long as
   `redis-rest` and `worldmonitor` agree on it; both ports bind to 127.0.0.1, so
@@ -35,8 +36,14 @@ docker run -d --name dashboard --restart unless-stopped \
   -v /opt/dashboard/pb.log:/data/pb.log \
   -v /opt/dashboard/data-okx:/data/okx \
   -v /opt/dashboard/architecture.json:/data/architecture.json:ro \
+  -v /home/ubuntu/gex_server/data:/data/gex:ro \
   dashboard:<version>
 ```
+
+The GEX widget reads `gex_zones.json`, which the `gex_server` collector
+rewrites once a minute. Mount the directory, read-only: a single-file mount
+would keep serving the old file if the collector ever replaces it. The
+dashboard never opens `gex.db` there.
 
 `docker restart` does not re-read `--env-file`, so always recreate the
 container after touching `dashboard.env`. Mount `/data/orch` as a directory and

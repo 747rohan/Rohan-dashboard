@@ -18,6 +18,7 @@ import wmRoute from './routes/wm.js';
 import archRoute from './routes/architecture.js';
 import logsRoute from './routes/logs.js';
 import okxProbeRoute from './routes/okxProbe.js';
+import gexRoute from './routes/gex.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -38,6 +39,7 @@ app.use('/api/wm', wmRoute);
 app.use('/api/architecture', archRoute);
 app.use('/api/logs', logsRoute);
 app.use('/api/okx-probe', okxProbeRoute);
+app.use('/api/gex', gexRoute);
 
 if (fs.existsSync(config.staticDir)) {
   app.use(express.static(config.staticDir));
