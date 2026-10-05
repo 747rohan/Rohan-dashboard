@@ -8,7 +8,8 @@
 - Код: `c:\Users\admin\Documents\Claude\Projects\Dashboard\dashboard\`
 - Сервер: `ubuntu@43.198.49.213` (AWS, Ubuntu 24.04), ключ `~/7RL платформа/Credo/AntonK.pem`
 - План 6 фаз: `PLAN.md`
-- Живёт на `http://43.198.49.213` (Basic Auth), контейнер `dashboard:0.68`
+- Живёт на `http://43.198.49.213` (Basic Auth), контейнер `dashboard:0.76` (актуальная версия — в `memory/project_status.md`)
+- Рядом наш второй дашборд **gex_server** (`/home/ubuntu/gex_server`, `gex-*`, порт 8091) — дашборд читает его `data/gex_zones.json` только на чтение
 - На этом же хосте работает чужой торговый сервис **7RL Rohan Trade System** под пользователем `rohan` — дашборд читает его данные через шимы (`dashboard/shims/`) и **никогда не пишет** в `/home/rohan/`
 - Старый сервер Rohan_server001 (62.60.232.247) удалён 07.08.2026 — все упоминания устарели
 
